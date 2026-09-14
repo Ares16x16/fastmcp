@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import signal
 import socket
+import threading
 from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
@@ -16,6 +18,7 @@ from starlette.middleware import Middleware as ASGIMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import BaseRoute, Route
+from uvicorn.server import HANDLED_SIGNALS
 
 import fastmcp
 from fastmcp.server.http import (
@@ -368,6 +371,11 @@ class TransportMixin:
             # Uvicorn replays a captured signal only after resource teardown.
             # `_serve()` has had this split throughout our supported Uvicorn
             # range (>=0.35).
+            original_handlers = (
+                {sig: signal.getsignal(sig) for sig in HANDLED_SIGNALS}
+                if threading.current_thread() is threading.main_thread()
+                else {}
+            )
             with server.capture_signals():
                 async with self._lifespan_manager():
                     try:
@@ -381,6 +389,14 @@ class TransportMixin:
                             with anyio.CancelScope(shield=True):
                                 await server.shutdown(sockets=sockets)
                         raise
+                    finally:
+                        # Serving has ended: Uvicorn no longer consumes its
+                        # shutdown flags. Restore the caller's handlers so a
+                        # second signal can interrupt slow user cleanup. The
+                        # capture context still replays the first signal after
+                        # the outer lifespan exits normally.
+                        for sig, handler in original_handlers.items():
+                            signal.signal(sig, handler)
 
     def http_app(
         self: FastMCP,

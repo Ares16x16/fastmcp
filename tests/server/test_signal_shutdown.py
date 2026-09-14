@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import anyio
 import pytest
 
 from fastmcp import FastMCP
@@ -61,6 +62,63 @@ def _available_port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])
+
+
+async def test_cancellation_completes_async_lifespan_teardown() -> None:
+    events: list[str] = []
+
+    @asynccontextmanager
+    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+        events.append("startup")
+        try:
+            yield {}
+        finally:
+            await anyio.sleep(0.05)
+            events.append("shutdown")
+
+    server = FastMCP("cancel-shutdown", lifespan=lifespan)
+    port = _available_port()
+
+    async def serve() -> None:
+        await server.run_http_async(host="127.0.0.1", port=port, show_banner=False)
+
+    with anyio.fail_after(4):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(serve)
+            while True:
+                try:
+                    stream = await anyio.connect_tcp("127.0.0.1", port)
+                except OSError:
+                    await anyio.sleep(0.01)
+                else:
+                    await stream.aclose()
+                    break
+            tasks.cancel_scope.cancel()
+    assert events == ["startup", "shutdown"]
+
+
+async def test_original_signal_handlers_are_restored_during_teardown() -> None:
+    def custom_handler(signum: int, frame: Any) -> None:
+        pass
+
+    @asynccontextmanager
+    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+        try:
+            yield {}
+        finally:
+            assert signal.getsignal(signal.SIGTERM) is custom_handler
+
+    server = FastMCP("restore-handlers", lifespan=lifespan)
+    original = signal.signal(signal.SIGTERM, custom_handler)
+    try:
+        with patch(
+            "fastmcp.server.mixins.transport.uvicorn.Server._serve",
+            new_callable=AsyncMock,
+        ):
+            await server.run_http_async(show_banner=False)
+        assert signal.getsignal(signal.SIGTERM) is custom_handler
+    finally:
+        signal.signal(signal.SIGTERM, original)
 
 
 def _wait_for_http(port: int, process: subprocess.Popen[str]) -> None:
@@ -136,3 +194,45 @@ def test_signal_runs_lifespan_teardown_and_exits(
         if process.poll() is None:
             process.kill()
             process.communicate()
+
+
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("transport", ["http", "sse"])
+def test_second_sigterm_interrupts_slow_lifespan_teardown(
+    tmp_path: Path, transport: str
+) -> None:
+    events_path = tmp_path / "events.txt"
+    port = _available_port()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            SERVER_MODULE,
+            "--events",
+            str(events_path),
+            "--port",
+            str(port),
+            "--transport",
+            transport,
+            "--slow-cleanup",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_http(port, process)
+        process.send_signal(signal.SIGTERM)
+        deadline = time.monotonic() + PROCESS_TIMEOUT
+        while "shutdown-started" not in events_path.read_text():
+            assert process.poll() is None, "Server exited before cleanup"
+            assert time.monotonic() < deadline, "Cleanup did not start"
+            time.sleep(0.01)
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=2)
+        assert process.returncode == -signal.SIGTERM
+        assert events_path.read_text().splitlines() == ["startup", "shutdown-started"]
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()

@@ -18,6 +18,7 @@ def main() -> None:
     parser.add_argument("--events", type=Path, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--transport", choices=("http", "sse"), required=True)
+    parser.add_argument("--slow-cleanup", action="store_true")
     args = parser.parse_args()
 
     def record(event: str) -> None:
@@ -30,6 +31,9 @@ def main() -> None:
         try:
             yield {}
         finally:
+            if args.slow_cleanup:
+                record("shutdown-started")
+                await anyio.sleep(60)
             # Exercise asynchronous cleanup, not only a synchronous marker.
             await anyio.sleep(0.05)
             record("shutdown")
