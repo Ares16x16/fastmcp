@@ -232,6 +232,7 @@ class Tool(FastMCPComponent):
     """Internal tool registration info."""
 
     KEY_PREFIX: ClassVar[str] = "tool"
+    _mirror_title_to_annotations: ClassVar[bool] = True
 
     return_type: Annotated[SkipJsonSchema[Any], Field(exclude=True)] = None
     parameters: Annotated[
@@ -277,16 +278,30 @@ class Tool(FastMCPComponent):
         if isinstance(annotations, dict):
             annotations = ToolAnnotations(**annotations)
 
-        if self.title:
-            title = self.title
+        explicit_title = overrides.get("title", self.title)
+        if explicit_title:
+            title = explicit_title
         elif annotations and annotations.title:
             title = annotations.title
         else:
             title = _default_title(name)
 
+        # Some clients, including the Claude connectors directory, read the
+        # title from `annotations.title` (its pre-2025-06-18 location) only.
+        if (
+            self._mirror_title_to_annotations
+            and explicit_title
+            and not (annotations and annotations.title)
+        ):
+            annotations = (
+                annotations.model_copy(update={"title": explicit_title})
+                if annotations
+                else ToolAnnotations(title=explicit_title)
+            )
+
         mcp_tool = MCPTool(
             name=name,
-            title=overrides.get("title", title),
+            title=title,
             description=overrides.get("description", self.description),
             input_schema=overrides.get("inputSchema", self.parameters),
             output_schema=overrides.get("outputSchema", self.output_schema),

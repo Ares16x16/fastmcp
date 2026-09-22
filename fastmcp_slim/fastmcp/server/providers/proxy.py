@@ -14,7 +14,7 @@ import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
 
 import anyio
 import httpx2
@@ -342,6 +342,7 @@ class ProxyTool(Tool):
     """A Tool that represents and executes a tool on a remote server."""
 
     task_config: TaskConfig = TaskConfig(mode="forbidden")
+    _mirror_title_to_annotations: ClassVar[bool] = False
     _backend_name: str | None = None
 
     def __init__(self, client_factory: ClientFactoryT, **kwargs: Any):

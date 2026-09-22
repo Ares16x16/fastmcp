@@ -127,3 +127,61 @@ class TestToolTitle:
         # Should fall back to annotations.title
         mcp_tool = tool.to_mcp_tool()
         assert mcp_tool.title == "Annotation Title"
+
+    def test_explicit_title_populates_annotations_title(self):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        tool = Tool.from_function(add, title="Add Numbers")
+
+        mcp_tool = tool.to_mcp_tool()
+        assert mcp_tool.annotations is not None
+        assert mcp_tool.annotations.title == "Add Numbers"
+        assert tool.annotations is None
+
+    def test_explicit_title_merges_into_existing_annotations(self):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        annotations = ToolAnnotations(read_only_hint=True)
+        tool = Tool.from_function(add, title="Add Numbers", annotations=annotations)
+
+        mcp_tool = tool.to_mcp_tool()
+        assert mcp_tool.annotations == ToolAnnotations(
+            title="Add Numbers", read_only_hint=True
+        )
+        assert annotations.title is None
+
+    def test_explicit_title_does_not_overwrite_annotations_title(self):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        tool = Tool.from_function(
+            add,
+            title="Explicit Title",
+            annotations=ToolAnnotations(title="Annotation Title"),
+        )
+
+        mcp_tool = tool.to_mcp_tool()
+        assert mcp_tool.title == "Explicit Title"
+        assert mcp_tool.annotations is not None
+        assert mcp_tool.annotations.title == "Annotation Title"
+
+    def test_title_override_populates_annotations_title(self):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        tool = Tool.from_function(add)
+
+        mcp_tool = tool.to_mcp_tool(title="Overridden")
+        assert mcp_tool.title == "Overridden"
+        assert mcp_tool.annotations is not None
+        assert mcp_tool.annotations.title == "Overridden"
+
+    def test_derived_title_does_not_create_annotations(self):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        mcp_tool = Tool.from_function(add).to_mcp_tool()
+        assert mcp_tool.title == "Add"
+        assert mcp_tool.annotations is None
