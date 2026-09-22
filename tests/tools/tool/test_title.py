@@ -1,6 +1,8 @@
 import pytest
+from mcp_types import Tool as MCPTool
 from mcp_types import ToolAnnotations
 
+from fastmcp.server.providers.proxy import ProxyTool
 from fastmcp.tools.base import Tool
 
 
@@ -185,3 +187,29 @@ class TestToolTitle:
         mcp_tool = Tool.from_function(add).to_mcp_tool()
         assert mcp_tool.title == "Add"
         assert mcp_tool.annotations is None
+
+    def test_null_title_override_is_preserved(self):
+        def add(x: int, y: int) -> int:
+            return x + y
+
+        tool = Tool.from_function(add, title="Add Numbers")
+
+        mcp_tool = tool.to_mcp_tool(title=None)
+        assert mcp_tool.title is None
+        assert mcp_tool.annotations is None
+
+    def test_proxy_tool_keeps_upstream_annotations(self):
+        upstream = MCPTool(name="add", title="Add", input_schema={"type": "object"})
+        tool = ProxyTool.from_mcp_tool(lambda: None, upstream)  # ty: ignore[invalid-argument-type]
+
+        mcp_tool = tool.to_mcp_tool()
+        assert mcp_tool.title == "Add"
+        assert mcp_tool.annotations is None
+
+    def test_proxy_tool_mirrors_title_override(self):
+        upstream = MCPTool(name="add", title="Add", input_schema={"type": "object"})
+        tool = ProxyTool.from_mcp_tool(lambda: None, upstream)  # ty: ignore[invalid-argument-type]
+
+        mcp_tool = tool.to_mcp_tool(title="Friendly")
+        assert mcp_tool.annotations is not None
+        assert mcp_tool.annotations.title == "Friendly"

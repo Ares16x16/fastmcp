@@ -278,9 +278,14 @@ class Tool(FastMCPComponent):
         if isinstance(annotations, dict):
             annotations = ToolAnnotations(**annotations)
 
-        explicit_title = overrides.get("title", self.title)
-        if explicit_title:
-            title = explicit_title
+        mirrored_title = None
+        if "title" in overrides:
+            title = overrides["title"]
+            mirrored_title = title
+        elif self.title:
+            title = self.title
+            if self._mirror_title_to_annotations:
+                mirrored_title = title
         elif annotations and annotations.title:
             title = annotations.title
         else:
@@ -288,15 +293,11 @@ class Tool(FastMCPComponent):
 
         # Some clients, including the Claude connectors directory, read the
         # title from `annotations.title` (its pre-2025-06-18 location) only.
-        if (
-            self._mirror_title_to_annotations
-            and explicit_title
-            and not (annotations and annotations.title)
-        ):
+        if mirrored_title and not (annotations and annotations.title):
             annotations = (
-                annotations.model_copy(update={"title": explicit_title})
+                annotations.model_copy(update={"title": mirrored_title})
                 if annotations
-                else ToolAnnotations(title=explicit_title)
+                else ToolAnnotations(title=mirrored_title)
             )
 
         mcp_tool = MCPTool(
