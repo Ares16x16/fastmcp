@@ -225,6 +225,7 @@ test("subprocess batches preserve exactly the existing Linux coverage", () => {
   const batch = workflow.jobs.run_subprocess_tests;
   assert.equal(batch["runs-on"], "ubuntu-latest");
   assert.equal(batch.strategy["fail-fast"], "false");
+  assert.equal(batch.strategy["max-parallel"], "2");
   assert.deepEqual(batch.strategy.matrix.include, [
     { "python-version": "3.10", resolution: "locked" },
     { "python-version": "3.13", resolution: "locked" },
