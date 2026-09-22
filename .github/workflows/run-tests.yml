@@ -63,12 +63,10 @@ jobs:
               return true;
             }
 
-  run_tests:
+  run_unit_tests:
     needs: changes
-    # Expand the matrix even for editorial PRs so every required check keeps
-    # its exact name. Skip the expensive steps, not the matrix job.
     if: ${{ !cancelled() }}
-    name: "Tests: Python ${{ matrix.python-version }} on ${{ matrix.os }}"
+    name: "Unit tests: Python ${{ matrix.python-version }} on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -94,12 +92,6 @@ jobs:
       - name: Run unit tests
         if: needs.changes.outputs.run-tests != 'false'
         uses: ./.github/actions/run-pytest
-
-      - name: Run serial subprocess tests
-        if: needs.changes.outputs.run-tests != 'false'
-        uses: ./.github/actions/run-pytest
-        with:
-          test-type: client_process
 
       - name: Run documentation tests
         if: needs.changes.outputs.run-tests == 'false' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'
@@ -143,10 +135,59 @@ jobs:
       - name: Run unit tests
         uses: ./.github/actions/run-pytest
 
+  run_subprocess_tests:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.run-tests != 'false' }}
+    name: "Subprocess tests: Python ${{ matrix.python-version }} (${{ matrix.resolution }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.10"
+            resolution: locked
+          - python-version: "3.13"
+            resolution: locked
+          - python-version: "3.10"
+            resolution: lowest-direct
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: ${{ matrix.python-version }}
+          resolution: ${{ matrix.resolution }}
       - name: Run serial subprocess tests
         uses: ./.github/actions/run-pytest
         with:
           test-type: client_process
+
+  run_tests:
+    needs:
+      [changes, run_unit_tests, run_tests_lowest_direct, run_subprocess_tests]
+    if: ${{ always() }}
+    name: "Tests: Python ${{ matrix.python-version }} on ubuntu-latest"
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - name: Require all Linux test batches
+        env:
+          UNIT_RESULT: ${{ needs.run_unit_tests.result }}
+          LOWEST_RESULT: ${{ needs.run_tests_lowest_direct.result }}
+          SUBPROCESS_RESULT: ${{ needs.run_subprocess_tests.result }}
+          EDITORIAL: ${{ needs.changes.outputs.run-tests == 'false' }}
+        run: |
+          test "$UNIT_RESULT" = success
+          if [ "$EDITORIAL" = true ]; then
+            test "$LOWEST_RESULT" = skipped
+            test "$SUBPROCESS_RESULT" = skipped
+          else
+            test "$LOWEST_RESULT" = success
+            test "$SUBPROCESS_RESULT" = success
+          fi
 
   run_conformance_tests:
     needs: changes

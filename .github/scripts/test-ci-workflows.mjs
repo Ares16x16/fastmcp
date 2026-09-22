@@ -183,11 +183,11 @@ for (const event of ["push", "workflow_dispatch"]) {
     assert.equal(result.calls, 0);
   });
 }
-test("required matrix checks retain names even when editorial steps skip", () => {
-  const matrix = workflow.jobs.run_tests;
+test("unit matrix retains coverage when editorial steps skip", () => {
+  const matrix = workflow.jobs.run_unit_tests;
   assert.equal(
     matrix.name,
-    "Tests: Python ${{ matrix.python-version }} on ${{ matrix.os }}",
+    "Unit tests: Python ${{ matrix.python-version }} on ${{ matrix.os }}",
   );
   assert.deepEqual(matrix.strategy.matrix, {
     os: ["ubuntu-latest"],
@@ -196,19 +196,20 @@ test("required matrix checks retain names even when editorial steps skip", () =>
   });
   assert.equal(matrix.if, "${{ !cancelled() }}");
   assert.equal(matrix.steps[0].uses, "actions/checkout@v7");
-  for (const step of matrix.steps.slice(2, 4))
+  for (const step of matrix.steps.slice(2, 3))
     assert.equal(step.if, "needs.changes.outputs.run-tests != 'false'");
   assert.equal(
     matrix.steps[1].if,
     "needs.changes.outputs.run-tests != 'false' || (matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10')",
   );
   assert.equal(
-    matrix.steps[4].if,
+    matrix.steps[3].if,
     "needs.changes.outputs.run-tests == 'false' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'",
   );
-  assert.equal(matrix.steps[4].run, "uv run pytest tests/docs -n 0");
+  assert.equal(matrix.steps[3].run, "uv run pytest tests/docs -n 0");
   for (const name of [
     "run_tests_lowest_direct",
+    "run_subprocess_tests",
     "run_conformance_tests",
     "run_integration_tests",
     "package_install_smoke",
@@ -219,6 +220,58 @@ test("required matrix checks retain names even when editorial steps skip", () =>
       "${{ !cancelled() && needs.changes.outputs.run-tests != 'false' }}",
     );
   }
+});
+test("subprocess batches preserve exactly the existing Linux coverage", () => {
+  const batch = workflow.jobs.run_subprocess_tests;
+  assert.equal(batch["runs-on"], "ubuntu-latest");
+  assert.equal(batch.strategy["fail-fast"], "false");
+  assert.deepEqual(batch.strategy.matrix.include, [
+    { "python-version": "3.10", resolution: "locked" },
+    { "python-version": "3.13", resolution: "locked" },
+    { "python-version": "3.10", resolution: "lowest-direct" },
+  ]);
+  assert.equal(batch.steps[2].with["test-type"], "client_process");
+  for (const name of ["run_unit_tests", "run_tests_lowest_direct"])
+    assert.ok(
+      workflow.jobs[name].steps.every(
+        (s) => s.with?.["test-type"] !== "client_process",
+      ),
+    );
+});
+test("required checks fail closed for failed, cancelled or unexpectedly skipped batches", () => {
+  const gate = workflow.jobs.run_tests;
+  assert.equal(gate.if, "${{ always() }}");
+  assert.equal(
+    gate.name,
+    "Tests: Python ${{ matrix.python-version }} on ubuntu-latest",
+  );
+  assert.deepEqual(gate.strategy.matrix["python-version"], ["3.10", "3.13"]);
+  assert.deepEqual(gate.needs, [
+    "changes",
+    "run_unit_tests",
+    "run_tests_lowest_direct",
+    "run_subprocess_tests",
+  ]);
+  const script = gate.steps[0].run;
+  const execute = (unit, lowest, subprocess, editorial) =>
+    execFileSync("bash", ["-e", "-c", script], {
+      env: {
+        ...process.env,
+        UNIT_RESULT: unit,
+        LOWEST_RESULT: lowest,
+        SUBPROCESS_RESULT: subprocess,
+        EDITORIAL: String(editorial),
+      },
+      stdio: "pipe",
+    });
+  execute("success", "success", "success", false);
+  execute("success", "skipped", "skipped", true);
+  for (const state of ["failure", "cancelled", "skipped", ""]) {
+    assert.throws(() => execute(state, "success", "success", false));
+    assert.throws(() => execute("success", state, "success", false));
+    assert.throws(() => execute("success", "success", state, false));
+  }
+  assert.throws(() => execute("failure", "skipped", "skipped", true));
 });
 test("Windows retains its check name but runs only outside PRs", () => {
   const windows = workflow.jobs.run_windows_tests;
