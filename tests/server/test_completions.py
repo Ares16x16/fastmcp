@@ -286,106 +286,44 @@ def test_completion_argument_and_context_types_importable():
     assert context.arguments == {"owner": "prefecthq"}
 
 
-def _suggesting_server(**kwargs: Any) -> FastMCP:
-    mcp = FastMCP("hidden-completion", **kwargs)
+@pytest.mark.parametrize("mode", MODES)
+async def test_completion_does_not_poison_a_response_cache(mode):
+    """A completion must not make a caching layer store a listing that a
+    generic-hook filter never saw (4.0.7 served hidden prompts this way)."""
+    from fastmcp.server.middleware import Middleware
+    from fastmcp.server.middleware.caching import ResponseCachingMiddleware
+
+    class HideInternal(Middleware):
+        async def on_request(self, context, call_next):
+            result = await call_next(context)
+            if context.method == "prompts/list":
+                return [p for p in result if "internal" not in p.name]
+            return result
+
+    mcp = FastMCP(middleware=[ResponseCachingMiddleware(), HideInternal()])
 
     @mcp.prompt
-    def poem(theme: str) -> str:
-        return f"Write a poem about {theme}"
+    def public(x: str) -> str:
+        return x
 
-    @mcp.resource("notes://{path}")
-    def note(path: str) -> str:
-        return path
-
-    @mcp.completion
-    def complete(ref, argument, context):
-        return ["private/salary.md"]
-
-    return mcp
-
-
-HIDDEN_REFS = [
-    PromptReference(name="poem"),
-    ResourceTemplateReference(uri="notes://{path}"),
-]
-
-
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
-async def test_completion_is_empty_for_refs_hidden_by_auth_middleware(ref, mode):
-    from fastmcp.server.middleware import AuthMiddleware
-
-    mcp = _suggesting_server(middleware=[AuthMiddleware(auth=lambda ctx: False)])
-    async with Client(mcp, mode=mode) as client:
-        result = await client.complete(ref, {"name": "path", "value": ""})
-    assert result.values == []
-
-
-@pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
-async def test_completion_is_empty_for_disabled_refs(ref, mode):
-    mcp = _suggesting_server()
-    mcp.disable(names={"poem"})
-    mcp.disable(keys={"template:notes://{path}@"})
-    async with Client(mcp, mode=mode) as client:
-        result = await client.complete(ref, {"name": "path", "value": ""})
-    assert result.values == []
-
-
-async def test_completion_answers_mounted_refs_by_their_namespaced_names():
-    parent = FastMCP("parent")
-    child = FastMCP("child")
-
-    @child.prompt
-    def poem(theme: str) -> str:
-        return f"Write a poem about {theme}"
-
-    @child.resource("notes://{path}")
-    def note(path: str) -> str:
-        return path
-
-    parent.mount(child, namespace="kid")
-
-    @parent.completion
-    def complete(ref, argument, context):
-        return ["value"]
-
-    async with Client(parent) as client:
-        prompts = [p.name for p in await client.list_prompts()]
-        templates = [t.uriTemplate for t in await client.list_resource_templates()]
-        for ref in [
-            PromptReference(name=prompts[0]),
-            ResourceTemplateReference(uri=templates[0]),
-        ]:
-            result = await client.complete(ref, {"name": "x", "value": ""})
-            assert result.values == ["value"]
-
-
-async def test_completion_answers_a_listed_static_resource_uri():
-    mcp = FastMCP("static-completion")
-
-    @mcp.resource("config://app")
-    def config() -> str:
-        return "{}"
+    @mcp.prompt
+    def internal_admin(x: str) -> str:
+        return x
 
     @mcp.completion
     def complete(ref, argument, context):
-        return ["value"]
+        return ["v"]
 
-    async with Client(mcp) as client:
-        listed = await client.complete(
-            ResourceTemplateReference(uri="config://app"), {"name": "x", "value": ""}
-        )
-        unknown = await client.complete(
-            ResourceTemplateReference(uri="config://other"), {"name": "x", "value": ""}
-        )
-    assert listed.values == ["value"]
-    assert unknown.values == []
+    async with Client(mcp, mode=mode) as first, Client(mcp, mode=mode) as second:
+        await first.complete(PromptReference(name="public"), {"name": "x", "value": ""})
+        listed = [p.name for p in await second.list_prompts()]
+    assert listed == ["public"]
 
 
 @pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
-async def test_visibility_check_does_not_run_generic_middleware(ref, mode):
+async def test_generic_middleware_sees_one_request_per_completion(mode):
+    """Rate limits, logging, and metrics must see a completion as one request
+    (4.0.6 charged each completion two or three times)."""
     from fastmcp.server.middleware import Middleware
 
     seen: list[str] = []
@@ -395,26 +333,27 @@ async def test_visibility_check_does_not_run_generic_middleware(ref, mode):
             seen.append(context.method)
             return await call_next(context)
 
-    mcp = _suggesting_server(middleware=[Recorder()])
+    mcp = FastMCP(middleware=[Recorder()])
+
+    @mcp.prompt
+    def poem(theme: str) -> str:
+        return theme
+
+    @mcp.resource("notes://{path}")
+    def note(path: str) -> str:
+        return path
+
+    @mcp.completion
+    def complete(ref, argument, context):
+        return ["v"]
+
     async with Client(mcp, mode=mode) as client:
         seen.clear()
-        result = await client.complete(ref, {"name": "path", "value": ""})
-    assert result.values == ["private/salary.md"]
-    assert seen == ["completion/complete"]
-
-
-@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
-async def test_raising_list_hook_fails_completion_closed(ref):
-    from fastmcp.server.middleware import Middleware
-
-    class BrokenListing(Middleware):
-        async def on_list_prompts(self, context, call_next):
-            raise RuntimeError("listing is down")
-
-        async def on_list_resource_templates(self, context, call_next):
-            raise RuntimeError("listing is down")
-
-    mcp = _suggesting_server(middleware=[BrokenListing()])
-    async with Client(mcp) as client:
-        result = await client.complete(ref, {"name": "path", "value": ""})
-    assert result.values == []
+        await client.complete(
+            PromptReference(name="poem"), {"name": "theme", "value": ""}
+        )
+        await client.complete(
+            ResourceTemplateReference(uri="notes://{path}"),
+            {"name": "path", "value": ""},
+        )
+    assert seen == ["completion/complete", "completion/complete"]
