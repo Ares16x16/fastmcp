@@ -357,3 +357,225 @@ async def test_generic_middleware_sees_one_request_per_completion(mode):
             {"name": "path", "value": ""},
         )
     assert seen == ["completion/complete", "completion/complete"]
+
+
+def _suggesting_server(**kwargs: Any) -> FastMCP:
+    mcp = FastMCP("hidden-completion", **kwargs)
+
+    @mcp.prompt
+    def poem(theme: str) -> str:
+        return f"Write a poem about {theme}"
+
+    @mcp.resource("notes://{path}")
+    def note(path: str) -> str:
+        return path
+
+    @mcp.completion
+    def complete(ref, argument, context):
+        return ["private/salary.md"]
+
+    return mcp
+
+
+HIDDEN_REFS = [
+    PromptReference(name="poem"),
+    ResourceTemplateReference(uri="notes://{path}"),
+]
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
+async def test_completion_is_empty_for_refs_hidden_by_auth_middleware(ref, mode):
+    from fastmcp.server.middleware import AuthMiddleware
+
+    mcp = _suggesting_server(middleware=[AuthMiddleware(auth=lambda ctx: False)])
+    async with Client(mcp, mode=mode) as client:
+        result = await client.complete(ref, {"name": "path", "value": ""})
+    assert result.values == []
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
+async def test_completion_is_empty_for_disabled_refs(ref, mode):
+    mcp = _suggesting_server()
+    mcp.disable(names={"poem"})
+    mcp.disable(keys={"template:notes://{path}@"})
+    async with Client(mcp, mode=mode) as client:
+        result = await client.complete(ref, {"name": "path", "value": ""})
+    assert result.values == []
+
+
+async def test_completion_answers_mounted_refs_by_their_namespaced_names():
+    parent = FastMCP("parent")
+    child = FastMCP("child")
+
+    @child.prompt
+    def poem(theme: str) -> str:
+        return f"Write a poem about {theme}"
+
+    @child.resource("notes://{path}")
+    def note(path: str) -> str:
+        return path
+
+    parent.mount(child, namespace="kid")
+
+    @parent.completion
+    def complete(ref, argument, context):
+        return ["value"]
+
+    async with Client(parent) as client:
+        prompts = [p.name for p in await client.list_prompts()]
+        templates = [t.uri_template for t in await client.list_resource_templates()]
+        for ref in [
+            PromptReference(name=prompts[0]),
+            ResourceTemplateReference(uri=templates[0]),
+        ]:
+            result = await client.complete(ref, {"name": "x", "value": ""})
+            assert result.values == ["value"]
+
+
+async def test_completion_answers_a_listed_static_resource_uri():
+    mcp = FastMCP("static-completion")
+
+    @mcp.resource("config://app")
+    def config() -> str:
+        return "{}"
+
+    @mcp.completion
+    def complete(ref, argument, context):
+        return ["value"]
+
+    async with Client(mcp) as client:
+        listed = await client.complete(
+            ResourceTemplateReference(uri="config://app"), {"name": "x", "value": ""}
+        )
+        unknown = await client.complete(
+            ResourceTemplateReference(uri="config://other"), {"name": "x", "value": ""}
+        )
+    assert listed.values == ["value"]
+    assert unknown.values == []
+
+
+@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
+async def test_completion_does_not_consult_list_hooks(ref):
+    """Completion resolves its reference directly, so list middleware never runs
+    for it, not even a list hook that raises."""
+    from fastmcp.server.middleware import Middleware
+
+    class BrokenListing(Middleware):
+        async def on_list_prompts(self, context, call_next):
+            raise RuntimeError("listing is down")
+
+        async def on_list_resource_templates(self, context, call_next):
+            raise RuntimeError("listing is down")
+
+        async def on_list_resources(self, context, call_next):
+            raise RuntimeError("listing is down")
+
+    mcp = _suggesting_server(middleware=[BrokenListing()])
+    async with Client(mcp) as client:
+        result = await client.complete(ref, {"name": "path", "value": ""})
+    assert result.values == ["private/salary.md"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("ref", HIDDEN_REFS, ids=["prompt", "template"])
+async def test_on_complete_hook_runs_once_per_completion(ref, mode):
+    from fastmcp.server.middleware import Middleware
+
+    seen: list[tuple[str, str]] = []
+
+    class Recorder(Middleware):
+        async def on_request(self, context, call_next):
+            seen.append(("request", context.method))
+            return await call_next(context)
+
+        async def on_complete(self, context, call_next):
+            seen.append(("complete", context.message.argument.name))
+            return await call_next(context)
+
+    mcp = _suggesting_server(middleware=[Recorder()])
+    async with Client(mcp, mode=mode) as client:
+        seen.clear()
+        result = await client.complete(ref, {"name": "path", "value": ""})
+    assert result.values == ["private/salary.md"]
+    assert seen == [("request", "completion/complete"), ("complete", "path")]
+
+
+async def test_completion_does_not_run_mounted_server_middleware():
+    from fastmcp.server.middleware import Middleware
+
+    child_seen: list[str] = []
+
+    class ChildRecorder(Middleware):
+        async def on_message(self, context, call_next):
+            child_seen.append(context.method)
+            return await call_next(context)
+
+    child = FastMCP("child", middleware=[ChildRecorder()])
+
+    @child.prompt
+    def poem(theme: str) -> str:
+        return theme
+
+    parent = FastMCP("parent")
+    parent.mount(child, namespace="kid")
+
+    @parent.prompt
+    def local(theme: str) -> str:
+        return theme
+
+    @parent.completion
+    def complete(ref, argument, context):
+        return ["v"]
+
+    async with Client(parent) as client:
+        child_seen.clear()
+        own = await client.complete(
+            PromptReference(name="local"), {"name": "theme", "value": ""}
+        )
+        mounted = await client.complete(
+            PromptReference(name="kid_poem"), {"name": "theme", "value": ""}
+        )
+    assert own.values == ["v"]
+    assert mounted.values == ["v"]
+    assert child_seen == []
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_hidden_and_unknown_refs_complete_identically(mode):
+    from fastmcp.server.auth import AuthContext
+    from fastmcp.server.middleware import AuthMiddleware
+
+    def deny_secret(ctx: AuthContext) -> bool:
+        return "secret" not in ctx.component.name
+
+    mcp = FastMCP(middleware=[AuthMiddleware(auth=deny_secret)])
+
+    @mcp.prompt
+    def secret_middleware(x: str) -> str:
+        return x
+
+    @mcp.prompt(auth=lambda ctx: False)
+    def component_auth(x: str) -> str:
+        return x
+
+    @mcp.prompt
+    def disabled(x: str) -> str:
+        return x
+
+    mcp.disable(names={"disabled"})
+
+    @mcp.completion
+    def complete(ref, argument, context):
+        return ["v"]
+
+    async with Client(mcp, mode=mode) as client:
+        results = [
+            await client.complete(
+                PromptReference(name=name), {"name": "x", "value": ""}
+            )
+            for name in ["secret_middleware", "component_auth", "disabled", "missing"]
+        ]
+    assert [r.model_dump() for r in results] == [results[3].model_dump()] * 4
+    assert results[3].values == []
