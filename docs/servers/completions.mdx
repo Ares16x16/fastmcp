@@ -174,4 +174,8 @@ async def complete(ref, argument, context):
 
 Completion runs behind the server's connection-level authentication: an unauthenticated client never reaches the handler. FastMCP then resolves the referenced prompt, resource template, or resource the way `prompts/get` and `resources/read` do, and only calls the handler for a reference the caller could get. A reference hidden by `disable()`, a visibility transform, component `auth=`, or `AuthMiddleware` gets an empty completion, exactly as an unknown reference would, so suggestions never confirm that a hidden component exists.
 
-Custom middleware that hides components only from listings (in `on_list_prompts`, say) hides them from listings only, as it does for `prompts/get`. To hide them from completion too, implement [`on_complete`](/servers/middleware#on_complete). If the candidates themselves should be restricted per caller, check the auth context inside the handler (via [`get_context()`](/servers/context)) and return `None` when the caller is not permitted.
+Custom middleware that hides components only from listings (in `on_list_prompts`, say) hides them from listings only, as it does for `prompts/get`. To hide them from completion too, implement [`on_complete`](/servers/middleware#on_complete).
+
+For a [mounted server](/servers/composition), completion runs the parent's middleware and applies the mounted server's visibility and component `auth=`, but it does not run the mounted server's own middleware. A component hidden only by middleware on the mounted server, including its `AuthMiddleware`, still completes. Put that middleware on the parent to cover completion.
+
+If the candidates themselves should be restricted per caller, check the auth context inside the handler (via [`get_context()`](/servers/context)) and return `None` when the caller is not permitted.

@@ -87,6 +87,7 @@ from fastmcp.server.middleware.middleware import (
 from fastmcp.server.mixins import LifespanMixin, MCPOperationsMixin, TransportMixin
 from fastmcp.server.providers import LocalProvider, Provider
 from fastmcp.server.providers.aggregate import AggregateProvider
+from fastmcp.server.providers.base import matching_templates
 from fastmcp.server.telemetry import server_span
 from fastmcp.server.transforms import (
     ToolTransform,
@@ -1240,11 +1241,7 @@ class FastMCP(
         if version is not None:
             return None
 
-        all_templates = [
-            t
-            for t in await super().list_resource_templates()
-            if t.matches(uri) is not None
-        ]
+        all_templates = matching_templates(await super().list_resource_templates(), uri)
         all_templates = list(await apply_session_transforms(all_templates))
         enabled = [t for t in all_templates if is_enabled(t)]
 

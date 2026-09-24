@@ -579,3 +579,72 @@ async def test_hidden_and_unknown_refs_complete_identically(mode):
         ]
     assert [r.model_dump() for r in results] == [results[3].model_dump()] * 4
     assert results[3].values == []
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_completion_finds_a_query_only_template_by_its_template_string(mode):
+    mcp = FastMCP("query-template")
+
+    @mcp.resource("search://items{?q}")
+    def search(q: str = "") -> str:
+        return q
+
+    child = FastMCP("child")
+
+    @child.resource("find://items{?q}")
+    def find(q: str = "") -> str:
+        return q
+
+    mcp.mount(child, namespace="kid")
+
+    @mcp.completion
+    def complete(ref, argument, context):
+        return ["v"]
+
+    async with Client(mcp, mode=mode) as client:
+        templates = [t.uri_template for t in await client.list_resource_templates()]
+        assert templates == ["search://items{?q}", "find://kid/items{?q}"]
+        for uri in templates:
+            result = await client.complete(
+                ResourceTemplateReference(uri=uri), {"name": "q", "value": ""}
+            )
+            assert result.values == ["v"]
+
+
+@pytest.mark.parametrize("disabled", [None, "notes://{id}", "notes://{path}"])
+@pytest.mark.parametrize("id_first", [True, False], ids=["id-first", "path-first"])
+async def test_completion_resolves_overlapping_templates_by_exact_string(
+    disabled, id_first
+):
+    """Two templates that match each other's strings must each resolve to
+    themselves, whatever the registration order."""
+    mcp = FastMCP("overlap")
+
+    def by_id(id: str) -> str:
+        return id
+
+    def by_path(path: str) -> str:
+        return path
+
+    registrations = [("notes://{id}", by_id), ("notes://{path}", by_path)]
+    for uri, fn in registrations if id_first else reversed(registrations):
+        mcp.resource(uri)(fn)
+    if disabled:
+        mcp.disable(keys={f"template:{disabled}@"})
+
+    @mcp.completion
+    def complete(ref, argument, context):
+        return ["v"]
+
+    async with Client(mcp) as client:
+        results = {
+            uri: (
+                await client.complete(
+                    ResourceTemplateReference(uri=uri), {"name": "x", "value": ""}
+                )
+            ).values
+            for uri, _ in registrations
+        }
+    assert results == {
+        uri: ([] if uri == disabled else ["v"]) for uri, _ in registrations
+    }
