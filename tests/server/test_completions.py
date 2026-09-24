@@ -648,3 +648,18 @@ async def test_completion_resolves_overlapping_templates_by_exact_string(
     assert results == {
         uri: ([] if uri == disabled else ["v"]) for uri, _ in registrations
     }
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_reading_a_template_string_that_does_not_match_itself_is_not_found(mode):
+    from fastmcp.exceptions import McpError
+
+    mcp = FastMCP("literal-read")
+
+    @mcp.resource("data://items{?limit}")
+    def items(limit: int = 10) -> str:
+        return f"limit={limit}"
+
+    async with Client(mcp, mode=mode) as client:
+        with pytest.raises(McpError, match="not found"):
+            await client.read_resource("data://items{?limit}")

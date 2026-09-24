@@ -68,7 +68,7 @@ When using [mounted servers](/servers/composition), middleware behavior follows 
 
 - **Parent middleware** runs for all requests, including those routed to mounted servers
 - **Mounted server middleware** only runs for requests handled by that specific server
-- **Completion** (`completion/complete`) runs only the parent's middleware, even when the reference names a mounted server's prompt or template
+- **Completion** (`completion/complete`) runs the parent's middleware, not the mounted server's, even when the reference names a mounted server's prompt or template
 
 ```python
 from fastmcp import FastMCP

@@ -1686,7 +1686,8 @@ class FastMCP(
                     )
                 span.set_attributes(template.get_span_attributes())
                 params = template.matches(uri)
-                assert params is not None
+                if params is None:
+                    raise NotFoundError(f"Unknown resource: {uri!r}")
 
                 # Path-security screening: reject traversal / absolute-path /
                 # null-byte payloads in extracted parameter values BEFORE the
