@@ -10,7 +10,7 @@ import mcp_types
 import pytest
 from mcp_types import TextContent, ToolAnnotations
 
-from fastmcp import Client, FastMCP
+from fastmcp import Client, FastMCP, FastMCPApp
 from fastmcp.exceptions import ToolError
 from fastmcp.server.context import Context
 from fastmcp.server.middleware.middleware import CallNext, Middleware, MiddlewareContext
@@ -572,6 +572,40 @@ class TestCallToolProxyScope:
         assert hints.destructive_hint is False
         assert hints.idempotent_hint is True
         assert hints.open_world_hint is False
+
+    async def test_app_only_tools_do_not_count(self):
+        app = FastMCPApp("contacts")
+
+        @app.tool()
+        def save_contact(name: str) -> str:
+            return f"saved {name}"
+
+        mcp = FastMCP("apps")
+
+        @mcp.tool(annotations=ToolAnnotations(read_only_hint=True))
+        def read_thing(key: str) -> str:
+            return f"read {key}"
+
+        mcp.add_provider(app)
+        mcp.add_transform(RegexSearchTransform())
+
+        hints = await self._proxy_hints(mcp)
+
+        assert hints is not None
+        assert hints.read_only_hint is True
+
+    async def test_overridden_call_tool_keeps_working(self):
+        class CustomProxy(RegexSearchTransform):
+            def _make_call_tool(self) -> Tool:
+                return Tool.from_function(fn=lambda name: name, name="call_tool")
+
+        mcp = self._server(read=ToolAnnotations(read_only_hint=True), write=None)
+        mcp.add_transform(CustomProxy())
+
+        hints = await self._proxy_hints(mcp)
+
+        assert hints is not None
+        assert hints.destructive_hint is True
 
     async def test_unannotated_hidden_tool_gets_spec_defaults(self):
         mcp = self._server(read=ToolAnnotations(read_only_hint=True), write=None)

@@ -358,7 +358,9 @@ class BaseSearchTransform(CatalogTransform):
             for t in tools
             if t.name not in self._always_visible and is_model_visible(t)
         ]
-        call_tool = self._make_call_tool(annotations=_proxy_annotations(reachable))
+        call_tool = self._make_call_tool().model_copy(
+            update={"annotations": _proxy_annotations(reachable)}
+        )
         return [*pinned, self._make_search_tool(), call_tool]
 
     async def get_tool(
@@ -380,7 +382,7 @@ class BaseSearchTransform(CatalogTransform):
         """Create the search tool. Subclasses define the parameter schema."""
         ...
 
-    def _make_call_tool(self, annotations: ToolAnnotations | None = None) -> Tool:
+    def _make_call_tool(self) -> Tool:
         """Create the call_tool proxy that executes discovered tools."""
         transform = self
 
@@ -415,9 +417,7 @@ class BaseSearchTransform(CatalogTransform):
                 )
             return await ctx.fastmcp.call_tool(name, arguments)
 
-        return Tool.from_function(
-            fn=call_tool, name=self._call_tool_name, annotations=annotations
-        )
+        return Tool.from_function(fn=call_tool, name=self._call_tool_name)
 
     # ------------------------------------------------------------------
     # Serialization
