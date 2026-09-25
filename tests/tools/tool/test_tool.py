@@ -1,3 +1,4 @@
+import functools
 from datetime import timedelta
 
 import pytest
@@ -10,6 +11,7 @@ from mcp_types import (
 )
 from pydantic import BaseModel
 
+from fastmcp import Client, FastMCP
 from fastmcp.tools.base import Tool, ToolResult
 from fastmcp.utilities.types import Audio, File, Image
 
@@ -636,3 +638,51 @@ class TestToolExecutionField:
         mcp_tool = tool.to_mcp_tool()
         assert mcp_tool.execution is not None
         assert mcp_tool.execution.task_support == "forbidden"
+
+class TestPartialTools:
+    """Tools built from functools.partial should use the wrapped function metadata."""
+
+    def test_partial_uses_wrapped_function_name_and_description(self):
+        def multiply(x: int, y: int) -> int:
+            """Multiply two numbers."""
+            return x * y
+
+        tool = Tool.from_function(functools.partial(multiply, y=2))
+        assert tool.name == "multiply"
+        assert tool.description == "Multiply two numbers."
+        # Bound kwargs appear as optional params with defaults; unbound stay required.
+        assert tool.parameters["properties"]["x"] == {"type": "integer"}
+        assert tool.parameters["required"] == ["x"]
+
+    def test_nested_partial_uses_innermost_function_name(self):
+        def greet(greeting: str, name: str) -> str:
+            """Greet a person."""
+            return f"{greeting}, {name}!"
+
+        tool = Tool.from_function(
+            functools.partial(functools.partial(greet, "Hello"), name="world")
+        )
+        assert tool.name == "greet"
+        assert tool.description == "Greet a person."
+
+    async def test_multiple_partial_tools_do_not_collide(self):
+        def multiply(x: int, y: int) -> int:
+            """Multiply two numbers."""
+            return x * y
+
+        def greet(name: str) -> str:
+            """Greet a person."""
+            return f"Hello, {name}!"
+
+        mcp = FastMCP()
+        mcp.add_tool(functools.partial(multiply, y=2))
+        mcp.add_tool(functools.partial(greet))
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+
+        by_name = {t.name: t for t in tools}
+        assert set(by_name) == {"multiply", "greet"}
+        assert by_name["multiply"].description == "Multiply two numbers."
+        assert by_name["greet"].description == "Greet a person."
+

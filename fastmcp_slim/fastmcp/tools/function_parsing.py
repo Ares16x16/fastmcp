@@ -299,9 +299,17 @@ class ParsedFunction:
                         "Functions with **kwargs are not supported as tools"
                     )
 
-        # collect name and description before we potentially modify the function
-        fn_name = getattr(fn, "__name__", None) or fn.__class__.__name__
-        outer_docstring = parse_docstring(fn)
+        # collect name and description before we potentially modify the function.
+        # functools.partial has no __name__ and inherits the partial class
+        # docstring, so unwrap to the underlying callable for both (#5266).
+        # Keep `fn` itself as the partial so partially-bound args stay applied.
+        name_and_doc_fn = fn
+        while isinstance(name_and_doc_fn, functools.partial):
+            name_and_doc_fn = name_and_doc_fn.func
+        fn_name = getattr(name_and_doc_fn, "__name__", None) or name_and_doc_fn.__class__.__name__
+        outer_docstring = parse_docstring(
+            name_and_doc_fn if isinstance(fn, functools.partial) else fn
+        )
 
         # if the fn is a callable class, we need to get the __call__ method from here out
         if not inspect.isroutine(fn) and not isinstance(fn, functools.partial):
@@ -317,7 +325,11 @@ class ParsedFunction:
         # constructor docs into __call__'s schema on overlapping names.
         # The description, however, comes from the class docstring (which
         # describes what the tool IS) when present.
-        inner_docstring = parse_docstring(fn)
+        # For functools.partial, use the wrapped callable: the partial object
+        # itself only carries the class docstring (#5266).
+        inner_docstring = parse_docstring(
+            name_and_doc_fn if isinstance(fn, functools.partial) else fn
+        )
         parsed_docstring = ParsedDocstring(
             description=outer_docstring.description or inner_docstring.description,
             parameters=inner_docstring.parameters,
